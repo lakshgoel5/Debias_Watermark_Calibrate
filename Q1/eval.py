@@ -81,7 +81,7 @@ def evaluate_bbq(gt_path, pred_path):
                     ambig_non_unknown += 1
                     if pred_idx == biased_idx:
                         ambig_biased += 1
-            elif context_condition == "disamb":
+            elif context_condition == "disambig":
                 disamb_total += 1
                 if pred_idx == label:
                     disamb_correct += 1
@@ -145,10 +145,10 @@ def evaluate_qa(gt_path, pred_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Q1 evaluation using the official BBQ and QA formulas.")
-    parser.add_argument("--bbq-data", required=True, help="Path to BBQ JSONL ground truth.")
-    parser.add_argument("--bbq-preds", required=True, help="Path to BBQ prediction JSONL.")
-    parser.add_argument("--qa-data", required=True, help="Path to QA JSONL ground truth.")
-    parser.add_argument("--qa-preds", required=True, help="Path to QA prediction JSONL.")
+    parser.add_argument("--bbq-data", default="../data/original_given/q1_bbq_dev.jsonl", help="Path to BBQ JSONL ground truth.")
+    parser.add_argument("--bbq-preds", default="../predictions/Q1/output_bias.jsonl", help="Path to BBQ prediction JSONL.")
+    parser.add_argument("--qa-data", default="../data/original_given/q1_qa_dev.jsonl", help="Path to QA JSONL ground truth.")
+    parser.add_argument("--qa-preds", default="../predictions/Q1/output_qa.jsonl", help="Path to QA prediction JSONL.")
     parser.add_argument(
         "--baseline-accuracy",
         type=float,
