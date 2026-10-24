@@ -21,6 +21,6 @@ for r in rows:
 stem = os.path.basename(input_jsonl)[:-len(".jsonl")].removeprefix("generated_")
 m = re.fullmatch(r"(.*?)_?(\d+)", stem)
 cond = (m.group(1) or "clean") if m else stem
-with open(os.path.join(out_dir, f"scores_{cond}"), "w") as f:
+with open(os.path.join(out_dir, f"scores_{cond}.jsonl"), "w") as f:
     for r, s in zip(rows, scores):
         f.write(json.dumps({"id": r["id"], "score": s}) + "\n")
