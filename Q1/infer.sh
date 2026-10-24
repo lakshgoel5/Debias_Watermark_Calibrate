@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Usage: ./infer.sh bias <absolute_path_to_output_dir> <input_jsonl>
+
 # Action: writes output_bias.jsonl to the provided output directory
 # Format: {"id": "q1_bbq_test_00000", "pred_idx": 2}
 #
@@ -30,4 +31,4 @@ fi
 
 input_jsonl="${3:-$default_input}"
 
-python3 infer.py "$mode" "$input_jsonl" "$out_dir"
+python3 infer.py "$mode" "$input_jsonl" "$out_dir" --model-dir checkpoints
