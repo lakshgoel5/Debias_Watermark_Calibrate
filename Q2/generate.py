@@ -1,53 +1,81 @@
-import json, os, sys, torch
+import inspect, json, os, sys, time, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from common import MODEL, DELTA, ENTROPY_GATE, NUM_TOKENS, load_key, green_mask
+from common import CONTEXT, DELTA, MODEL, NUM_TOKENS, load_key, green_mask
 
 input_jsonl, out_dir, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
+batch_size = int(os.environ.get("WM_BATCH", "8"))
 key = load_key(out_dir)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Model and tokenizer
+t_load = time.perf_counter()
 tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
+tokenizer.padding_side = "left"
+if tokenizer.pad_token_id is None:
+    tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
+fwd_extra = {}
+params = inspect.signature(model.forward).parameters
+if "logits_to_keep" in params:
+    fwd_extra["logits_to_keep"] = 1
+elif "num_logits_to_keep" in params:
+    fwd_extra["num_logits_to_keep"] = 1
+if device == "cuda":
+    torch.cuda.synchronize()
+load_s = time.perf_counter() - t_load
 
-#input rows
 rows = [json.loads(l) for l in open(input_jsonl) if l.strip()]
+vocab = key["vocab_size"]
+# CONTEXT=0: one green list, kept on device. The per-token copy was part of the 40 min projection.
+green = None if CONTEXT else green_mask(0, key, vocab).to(device)
+gen = torch.Generator(device=device)
+gen.manual_seed(seed)
 
-results = []
-for i, r in enumerate(rows):
-    # Per-prompt RNG derived from (seed, index): same seed -> identical output,
-    # different seed -> different output, regardless of run order.
-    gen = torch.Generator(device=device)
-    gen.manual_seed(seed * 1_000_003 + i) # 
-
-    ids = tokenizer(r["prompt"], return_tensors="pt", add_special_tokens=False).input_ids.to(device)
-    prev = ids[0, -1].item()
-    new_ids = []
+results = [None] * len(rows)
+t_gen = time.perf_counter()
+for start in range(0, len(rows), batch_size):
+    chunk = rows[start:start + batch_size]
+    enc = tokenizer([r["prompt"] for r in chunk], return_tensors="pt", padding=True,
+                    add_special_tokens=False).to(device)
+    attn = enc["attention_mask"]
+    # Left padding must not shift RoPE. Real prompt tokens keep positions 0..L-1.
+    prompt_len = attn.long().sum(dim=1)
+    position_ids = attn.long().cumsum(dim=1) - 1
+    position_ids = position_ids.masked_fill(attn == 0, 0)
+    new = []
     with torch.no_grad():
-        out = model(ids, use_cache=True)  # KV cache: only feed 1 token per step
-        for _ in range(NUM_TOKENS):
-            logits = out.logits[0, -1].float()
-            assert logits.shape[0] == key["vocab_size"]
-            # The ONLY change to the distribution: +delta_t on green tokens. Temperature stays 1.0,
-            # no top-k/top-p. With ENTROPY_GATE=1 (Idea 3), delta_t = DELTA * (1 - p_max): locked-in
-            # tokens (p_max -> 1) are left intact to protect M-oracle PPL (Q), while uncertain steps
-            # (p_max small) receive the full watermark boost.
-            # EOS is not blocked: if sampled we just keep going, so we never stop early.
-            if ENTROPY_GATE:
-                p_max = torch.softmax(logits, -1).max().item()
-                delta_t = DELTA * (1.0 - p_max)
+        out = model(input_ids=enc["input_ids"], attention_mask=attn, position_ids=position_ids,
+                    use_cache=True, **fwd_extra)
+        for step in range(NUM_TOKENS):
+            logits = out.logits[:, -1, :vocab].float()
+            if CONTEXT:
+                prev = new[-1] if new else enc["input_ids"][:, -1]
+                step_mask = torch.stack([green_mask(int(p), key, vocab) for p in prev.tolist()]).to(device)
+                logits = logits + DELTA * step_mask.float()
             else:
-                delta_t = DELTA
-            logits = logits + delta_t * green_mask(prev, key, key["vocab_size"]).to(device)
-            # logits modified before softmax, so green tokens are more likely to be sampled
-            nxt = torch.multinomial(torch.softmax(logits, -1), 1, generator=gen)  # samples an index according to the supplied weights or probabilities
-            # multinomial sampling allows lower-probability tokens to be selected too
-            prev = nxt.item()  # converts the one-element tensor into a regular Python integer
-            new_ids.append(prev)
-            out = model(nxt.view(1, 1), past_key_values=out.past_key_values, use_cache=True)
+                logits = logits + DELTA * green.float()
+            nxt = torch.multinomial(torch.softmax(logits, -1), 1, generator=gen)
+            new.append(nxt)
+            attn = torch.cat([attn, torch.ones(len(chunk), 1, dtype=attn.dtype, device=device)], 1)
+            step_pos = (prompt_len + step).unsqueeze(1)
+            out = model(input_ids=nxt, attention_mask=attn, position_ids=step_pos,
+                        past_key_values=out.past_key_values, use_cache=True, **fwd_extra)
+    ids = torch.cat(new, 1).tolist()
+    for j, r in enumerate(chunk):
+        results[start + j] = {
+            "id": r["id"],
+            "text": tokenizer.decode(ids[j], skip_special_tokens=True),
+            "token_ids": ids[j],
+        }
+    print(f"{min(start + batch_size, len(rows))}/{len(rows)}  {time.perf_counter() - t_gen:.0f}s", flush=True)
 
-    results.append({"id": r["id"], "text": tokenizer.decode(new_ids, skip_special_tokens=True), "token_ids": new_ids})
-    print(f"{i+1}/{len(rows)}", end="\r")
+if device == "cuda":
+    torch.cuda.synchronize()
+gen_s = time.perf_counter() - t_gen
+per = gen_s / len(rows) if rows else 0.0
+projected = load_s + per * 300
+print(f"generate: load {load_s:.1f}s, {len(rows)} prompts {gen_s:.1f}s, {per:.2f}s/prompt, batch {batch_size}")
+print(f"generate: projected 300 prompts {projected / 60:.1f} min (limit 30 min)")
 
 with open(os.path.join(out_dir, f"generated_{seed}.jsonl"), "w") as f:
     for x in results:

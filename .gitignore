@@ -222,3 +222,6 @@ predictions/
 kaggle*
 secret/
 checkpoints/
+Q2/eval.py
+.vscode
+.github

@@ -13,13 +13,11 @@ Knobs:
 import collections, functools, hashlib, json, math, os, torch
 
 MODEL = "Qwen/Qwen2.5-1.5B"
-GAMMA = 0.5
-# WM_DELTA / WM_CONTEXT / WM_GATE / WM_WHITEBOX only exist so dev sweeps need no file edits.
-# Hardcode the winners here before submitting: the grader sets no environment variables.
-DELTA = float(os.environ.get("WM_DELTA", 2.2))
+GAMMA = 0.25
+DELTA = float(os.environ.get("WM_DELTA", 2.0))
 CONTEXT = int(os.environ.get("WM_CONTEXT", 0))
-ENTROPY_GATE = int(os.environ.get("WM_GATE", 1))  # Idea 3: scale delta by (1 - p_max)
-WHITEBOX_DETECT = int(os.environ.get("WM_WHITEBOX", 1)) # Idea 4: M-base Neyman-Pearson LLR in detect.py
+ENTROPY_GATE = int(os.environ.get("WM_GATE", 0))  # 0: flat DELTA. 1 was slower and weaker.
+WHITEBOX_DETECT = int(os.environ.get("WM_WHITEBOX", 1))  # M-base Neyman-Pearson LLR in detect.py
 LLR_DELTA = float(os.environ.get("WM_LLR_DELTA", 1.0))
 NUM_TOKENS = 200
 
@@ -73,43 +71,36 @@ def z_score(ids, key):
 
 @torch.no_grad()
 def whitebox_score(ids, key, model, device):
-    """White-box Neyman-Pearson log-likelihood ratio under M-base blended with log-multiplicity z_score.
+    """Neyman-Pearson log-likelihood ratio of the watermark against M-base.
 
-    At step t >= 1, M-base predicts next-token distribution p_base(. | ids[:t]).
-    Let P_G(t) = sum_{v in Green} p_base(v | ids[:t]) be the probability mass M-base puts on the
-    green list. Under a watermark with logit shift d on green tokens, the step log-likelihood
-    ratio log(p_wm(ids[t] | ids[:t]) / p_base(ids[t] | ids[:t])) is:
-        ell_t = d * 1[ids[t] in Green] - log(1 + P_G(t) * (exp(d) - 1))
-    Forced green tokens in human text have P_G(t) -> 1, so ell_t -> 0 (suppressing false positives).
-    Forced red tokens in watermarked text have P_G(t) -> 0, so ell_t -> 0 (avoiding false penalties).
-    Blending with the context-free log-multiplicity z_score keeps robustness when random token
-    substitutions corrupt local prefixes.
+    ell_t = d * 1[token_t in Green] - log(1 + P_G(t) * (exp(d) - 1))
+    score = sum_t ell_t / sqrt(T)
+
+    P_G(t) is the probability mass M-base puts on the green list at that step.
+    A forced green token in human text has P_G near 1, so ell_t is about 0.
+    This is the score that reached S_det 0.95 on the Run 2 files. It is not mixed
+    with the z-score: that mix lowered paraphrase detection on the later run.
     """
-    z_lex = z_score(ids, key)
     if len(ids) < 2:
-        return z_lex
+        return z_score(ids, key)
     vocab_size = key["vocab_size"]
     inp = torch.tensor([ids], dtype=torch.long, device=device)
     logits = model(inp).logits[0, :-1, :vocab_size].float()
     probs = torch.softmax(logits, dim=-1)
-
     d = LLR_DELTA
     ex = math.exp(d) - 1.0
+    chosen = torch.tensor(ids[1:], dtype=torch.long, device=device)
     if not CONTEXT:
         mask = green_mask(0, key, vocab_size).to(device)
-        p_green = probs[:, mask].sum(dim=-1).cpu().tolist()
-        g_hits = [1.0 if mask[t].item() else 0.0 for t in ids[1:]]
+        p_green = probs[:, mask].sum(dim=-1)
+        green = mask[chosen].float()
     else:
-        p_green, g_hits = [], []
+        p_green, green = [], []
         for step, (prev_t, cur_t) in enumerate(zip(ids[:-1], ids[1:])):
             m = green_mask(prev_t, key, vocab_size).to(device)
-            p_green.append(float(probs[step, m].sum().item()))
-            g_hits.append(1.0 if m[cur_t].item() else 0.0)
-
-    # Include first token with unconditional prior P_G = GAMMA
-    g0 = 1.0 if green_mask(0, key, vocab_size)[ids[0]] else 0.0
-    llr = d * g0 - math.log(1.0 + GAMMA * ex)
-    for g, pg in zip(g_hits, p_green):
-        llr += d * g - math.log(1.0 + pg * ex)
-    llr_norm = llr / math.sqrt(len(ids) * GAMMA * (1.0 - GAMMA))
-    return 0.75 * llr_norm + 0.25 * z_lex
+            p_green.append(probs[step, m].sum())
+            green.append(m[cur_t].float())
+        p_green = torch.stack(p_green)
+        green = torch.stack(green)
+    llr = (d * green - torch.log1p(p_green * ex)).sum()
+    return float(llr / math.sqrt(len(ids) - 1))
