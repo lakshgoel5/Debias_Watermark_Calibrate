@@ -129,32 +129,23 @@ def evaluate(data_path, predictions_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Q3 calibrated QA predictions.")
-    parser.add_argument("--dev-data", default="../data/public/q3_qa_dev.jsonl")
-    parser.add_argument("--dev-preds", default="../predictions/Q3/dev/output.jsonl")
-    parser.add_argument("--ood-data", default="../data/public/q3_qa_dev_ood.jsonl")
-    parser.add_argument("--ood-preds", default="../predictions/Q3/ood/output.jsonl")
-    parser.add_argument("--train-data", default=None)
-    parser.add_argument("--train-preds", default=None)
+    parser = argparse.ArgumentParser(
+        description="Evaluate one Q3 prediction file. Q3 score is the mean of the two set_scores."
+    )
+    parser.add_argument("task")
+    parser.add_argument("predictions")
+    parser.add_argument("gold")
     args = parser.parse_args()
+    if args.task != "q3":
+        parser.error(f"expected task 'q3', got {args.task!r}")
 
-    def show(name, metrics):
-        print(f"{name}:")
-        for metric, value in metrics.items():
-            if isinstance(value, float):
-                print(f"  {metric} = {value:.4f}")
-            else:
-                print(f"  {metric} = {value}")
-
-    if args.train_data and args.train_preds:
-        show("train", evaluate(args.train_data, args.train_preds))
-        return
-
-    in_domain = evaluate(args.dev_data, args.dev_preds)
-    out_of_domain = evaluate(args.ood_data, args.ood_preds)
-    for name, metrics in (("in-domain", in_domain), ("out-of-domain", out_of_domain)):
-        show(name, metrics)
-    print(f"Q3 score = {(in_domain['set_score'] + out_of_domain['set_score']) / 2:.4f}")
+    metrics = evaluate(args.gold, args.predictions)
+    print(f"{args.task}:")
+    for metric, value in metrics.items():
+        if isinstance(value, float):
+            print(f"  {metric} = {value:.4f}")
+        else:
+            print(f"  {metric} = {value}")
 
 
 if __name__ == "__main__":
