@@ -1,13 +1,17 @@
-"""Builds the 4 test conditions from generated_<seed>.jsonl.
+"""Builds the detection inputs from one generate.sh run.
 
-Usage: python perturb.py <input_jsonl> <output_dir> <seed>
-Writes <output_dir>/generated_{clean,short,substitution,paraphrase}_<seed>.jsonl
-Each line: {"id", "text", "token_ids"}  (detect.py only reads "id" and "text").
+Usage: python perturb.py <prompts_jsonl> <output_dir> <seed>
+Reads <output_dir>/generated_<seed>.jsonl and writes
+  generated_{clean,short,substitution,paraphrase}_<seed>.jsonl
+  human.jsonl and human_short.jsonl, when the prompts file has human_text.
+Passing generated_<seed>.jsonl as the input still works for the 4 conditions.
+human.jsonl is written only when some row carries human_text.
 """
 import json, os, random, sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from common import MODEL
 
+INST_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"   # paraphrase condition only
 SUB_FRAC = 0.2          # 40 of 200 positions
 SHORT_LEN = 50
 PARA_BATCH = 16
@@ -16,7 +20,17 @@ PARA_MAX_NEW = 320
 input_jsonl, out_dir, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
 os.makedirs(out_dir, exist_ok=True)
 tok = AutoTokenizer.from_pretrained(MODEL)
-rows = [json.loads(l) for l in open(input_jsonl) if l.strip()]
+src = [json.loads(l) for l in open(input_jsonl) if l.strip()]
+gen_path = os.path.join(out_dir, f"generated_{seed}.jsonl")
+if src and "token_ids" in src[0]:
+    rows = src
+else:
+    rows = [json.loads(l) for l in open(gen_path) if l.strip()]
+
+human_by_id = {}
+for r in src + rows:
+    if r.get("human_text"):
+        human_by_id.setdefault(r["id"], r["human_text"])
 
 
 def write(cond, items):
@@ -25,8 +39,26 @@ def write(cond, items):
             f.write(json.dumps(x) + "\n")
 
 
+def dump(name, items):
+    with open(os.path.join(out_dir, name), "w") as f:
+        for x in items:
+            f.write(json.dumps(x) + "\n")
+
+
 def dec(ids):
     return tok.decode(ids, skip_special_tokens=True)
+
+
+if human_by_id:
+    order = [r["id"] for r in src if r["id"] in human_by_id] or list(human_by_id)
+    humans, shorts = [], []
+    for i in order:
+        text = human_by_id[i]
+        ids = tok(text, add_special_tokens=False).input_ids[:SHORT_LEN]
+        humans.append({"id": i, "text": text})
+        shorts.append({"id": i, "text": dec(ids)})
+    dump("human.jsonl", humans)
+    dump("human_short.jsonl", shorts)
 
 
 # clean
@@ -53,32 +85,40 @@ for idx, r in enumerate(rows):
     sub.append({"id": r["id"], "text": dec(ids), "token_ids": ids})
 write("substitution", sub)
 
-# paraphrase: M-base only. M-inst is for Tasks 1 and 3, so it is not loaded here.
+# paraphrase: whole text rewritten by M-inst, keeping the meaning.
 device = "cuda" if torch.cuda.is_available() else "cpu"
-tok.padding_side = "left"
-if tok.pad_token_id is None:
-    tok.pad_token = tok.eos_token
+itok = AutoTokenizer.from_pretrained(INST_MODEL, padding_side="left")
+if itok.pad_token_id is None:
+    itok.pad_token = itok.eos_token
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
+    INST_MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
 torch.manual_seed(seed)
 
 
 def prompt_for(text):
-    return ("Rewrite the passage in different words. Keep the meaning and roughly the same length. "
-            "The passage may end mid-sentence; do not finish it or add a title.\n\nPassage:\n"
-            + text.strip() + "\n\nRewrite:\n")
+    msgs = [
+        {"role": "system", "content": "You are a careful paraphrasing tool. You output only the rewritten text."},
+        {"role": "user", "content":
+         "Rewrite the passage below in your own words. Keep the same meaning and details, use different "
+         "vocabulary and sentence structure, and keep roughly the same length. The passage may be cut off "
+         "mid-sentence; do not complete it, answer it, or add commentary. Output only the rewritten "
+         "passage, with no preface.\n\nPassage:\n" + text.strip()},
+    ]
+    return itok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 
 
 para = []
 for b in range(0, len(rows), PARA_BATCH):
     batch = rows[b:b + PARA_BATCH]
-    enc = tok([prompt_for(r["text"]) for r in batch], return_tensors="pt", padding=True,
-              add_special_tokens=False).to(device)
+    enc = itok([prompt_for(r["text"]) for r in batch], return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
         out = model.generate(**enc, max_new_tokens=PARA_MAX_NEW, do_sample=True, temperature=0.7,
-                             top_p=0.9, pad_token_id=tok.pad_token_id)
+                             top_p=0.9, pad_token_id=itok.pad_token_id)
     for r, o in zip(batch, out):
-        text = tok.decode(o[enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
+        text = itok.decode(o[enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
+        low = text.lower()
+        if low.startswith(("here is", "here's", "sure", "paraphrase")) and "\n" in text:
+            text = text.split("\n", 1)[1].strip()
         para.append({"id": r["id"], "text": text, "token_ids": tok(text, add_special_tokens=False).input_ids})
     print(f"paraphrase {len(para)}/{len(rows)}", end="\r")
 write("paraphrase", para)
