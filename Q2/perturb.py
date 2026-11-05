@@ -8,7 +8,6 @@ import json, os, random, sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from common import MODEL
 
-INST_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 SUB_FRAC = 0.2          # 40 of 200 positions
 SHORT_LEN = 50
 PARA_BATCH = 16
@@ -54,37 +53,32 @@ for idx, r in enumerate(rows):
     sub.append({"id": r["id"], "text": dec(ids), "token_ids": ids})
 write("substitution", sub)
 
-# paraphrase: rewrite whole text with M-inst
+# paraphrase: M-base only. M-inst is for Tasks 1 and 3, so it is not loaded here.
 device = "cuda" if torch.cuda.is_available() else "cpu"
-itok = AutoTokenizer.from_pretrained(INST_MODEL, padding_side="left")
+tok.padding_side = "left"
+if tok.pad_token_id is None:
+    tok.pad_token = tok.eos_token
 model = AutoModelForCausalLM.from_pretrained(
-    INST_MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
+    MODEL, dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval()
 torch.manual_seed(seed)
 
 
 def prompt_for(text):
-    msgs = [
-        {"role": "system", "content": "You are a careful paraphrasing tool. You output only the rewritten text."},
-        {"role": "user", "content":
-         "Rewrite the passage below in your own words. Keep the same meaning and details, use different "
-         "vocabulary and sentence structure, and keep roughly the same length. The passage may be cut off "
-         "mid-sentence; do not complete it, answer it, or add commentary. Output only the rewritten "
-         "passage, with no preface.\n\nPassage:\n" + text.strip()}]
-    return itok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+    return ("Rewrite the passage in different words. Keep the meaning and roughly the same length. "
+            "The passage may end mid-sentence; do not finish it or add a title.\n\nPassage:\n"
+            + text.strip() + "\n\nRewrite:\n")
 
 
 para = []
 for b in range(0, len(rows), PARA_BATCH):
     batch = rows[b:b + PARA_BATCH]
-    enc = itok([prompt_for(r["text"]) for r in batch], return_tensors="pt", padding=True).to(device)
+    enc = tok([prompt_for(r["text"]) for r in batch], return_tensors="pt", padding=True,
+              add_special_tokens=False).to(device)
     with torch.no_grad():
         out = model.generate(**enc, max_new_tokens=PARA_MAX_NEW, do_sample=True, temperature=0.7,
-                             top_p=0.9, pad_token_id=itok.pad_token_id)
+                             top_p=0.9, pad_token_id=tok.pad_token_id)
     for r, o in zip(batch, out):
-        text = itok.decode(o[enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
-        low = text.lower()
-        if low.startswith(("here is", "here's", "sure", "paraphrase")) and "\n" in text:
-            text = text.split("\n", 1)[1].strip()   # drop chatty preface line
+        text = tok.decode(o[enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
         para.append({"id": r["id"], "text": text, "token_ids": tok(text, add_special_tokens=False).input_ids})
     print(f"paraphrase {len(para)}/{len(rows)}", end="\r")
 write("paraphrase", para)
