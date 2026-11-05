@@ -220,7 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 predictions/
 kaggle*
-secret/
+old_secrets/
 checkpoints/
 Q2/eval.py
 .vscode
