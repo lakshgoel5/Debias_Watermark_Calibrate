@@ -10,12 +10,14 @@ Knobs:
   DELTA logit bonus. Bigger = easier detection, but worse perplexity (hurts Q).
   CONTEXT green list depends on previous token (h=1); 0 = one fixed list for the whole text, h=0 survives substitution/paraphrase much better
 """
-import functools, hashlib, json, math, os, torch
+import collections, functools, hashlib, json, math, os, torch
 
 MODEL = "Qwen/Qwen2.5-1.5B"
 GAMMA = 0.25
-DELTA = 2.0
-CONTEXT = 1
+# WM_DELTA / WM_CONTEXT only exist so dev sweeps need no file edits. Hardcode the winners here
+# For experimentation
+DELTA = float(os.environ.get("WM_DELTA", 2.0))
+CONTEXT = int(os.environ.get("WM_CONTEXT", 0))
 NUM_TOKENS = 200
 
 
@@ -37,22 +39,30 @@ def green_mask(prev_token, key, vocab_size):
     """Bool mask over the logit dimension: True = green. (Do not mutate the result; it is cached.)"""
     return _mask(key["secret"], prev_token if CONTEXT else 0, vocab_size)
 
-# z = G - n*GAMMA / 
-#                 sqrt(n*GAMMA*(1-GAMMA))
+# Weighted z-score over unique (context, token) items with log-multiplicity weights w_i = 1 + ln(k_i):
+#   z = sum_i w_i * (1[item_i in Green] - GAMMA) / sqrt(GAMMA * (1 - GAMMA) * sum_i w_i^2)
 def z_score(ids, key):
     """Detection statistic for a list of token ids.
 
-    Null hypothesis (human text): each scored item is green with prob GAMMA, independently.
-    Items are UNIQUE (context, token) pairs: repeated phrases would otherwise be counted many
-    times, breaking independence and inflating human scores.
+    Null hypothesis (human text): each distinct (context, token) item is green with prob GAMMA
+    independently. Rather than discarding repeat occurrences (w_i = 1) or counting raw repeats
+    linearly (w_i = k_i, which lets a single repeated word blow up human variance), each unique
+    item with count k_i gets sublinear weight w_i = 1 + ln(k_i), normalized by the exact null
+    standard deviation sqrt(GAMMA * (1 - GAMMA) * sum_i w_i^2).
     With h=1 the first token is skipped (its context was in the prompt, which we don't have).
     """
-    if CONTEXT: #Context=1
-        items = set(zip(ids[:-1], ids[1:]))
-    else: #Context=0
-        items = {(0, t) for t in ids}
-    n = len(items)
-    if n == 0:
+    if CONTEXT:  # Context=1
+        counts = collections.Counter(zip(ids[:-1], ids[1:]))
+    else:        # Context=0
+        counts = collections.Counter((0, t) for t in ids)
+    if not counts:
         return 0.0
-    green = sum(bool(green_mask(p, key, key["vocab_size"])[t]) for p, t in items)
-    return (green - GAMMA * n) / math.sqrt(n * GAMMA * (1 - GAMMA))
+    vocab_size = key["vocab_size"]
+    num = 0.0
+    sum_w2 = 0.0
+    for (p, t), k in counts.items():
+        w = 1.0 + math.log(k)
+        is_green = 1.0 if green_mask(p, key, vocab_size)[t] else 0.0
+        num += w * (is_green - GAMMA)
+        sum_w2 += w * w
+    return num / math.sqrt(sum_w2 * GAMMA * (1.0 - GAMMA))
