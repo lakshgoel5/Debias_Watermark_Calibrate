@@ -1,11 +1,9 @@
-"""Builds the detection inputs from one generate.sh run.
+"""Builds the six detection inputs from one generate.sh run.
 
-Usage: python perturb.py <prompts_jsonl> <output_dir> <seed>
-Reads <output_dir>/generated_<seed>.jsonl and writes
-  generated_{clean,short,substitution,paraphrase}_<seed>.jsonl
-  human.jsonl and human_short.jsonl, when the prompts file has human_text.
-Passing generated_<seed>.jsonl as the input still works for the 4 conditions.
-human.jsonl is written only when some row carries human_text.
+Usage: python perturb.py <generated_<seed>.jsonl> <output_dir> <seed>
+The input is the file generate.sh wrote. Writes
+  generated_{clean,short,substitution,paraphrase,human,human_short}_<seed>.jsonl
+human and human_short are written when that file carries human_text.
 """
 import json, os, random, sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -20,17 +18,9 @@ PARA_MAX_NEW = 320
 input_jsonl, out_dir, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
 os.makedirs(out_dir, exist_ok=True)
 tok = AutoTokenizer.from_pretrained(MODEL)
-src = [json.loads(l) for l in open(input_jsonl) if l.strip()]
-gen_path = os.path.join(out_dir, f"generated_{seed}.jsonl")
-if src and "token_ids" in src[0]:
-    rows = src
-else:
-    rows = [json.loads(l) for l in open(gen_path) if l.strip()]
-
-human_by_id = {}
-for r in src + rows:
-    if r.get("human_text"):
-        human_by_id.setdefault(r["id"], r["human_text"])
+rows = [json.loads(l) for l in open(input_jsonl) if l.strip()]
+if not rows or "token_ids" not in rows[0]:
+    sys.exit("perturb.sh input must be generated_<seed>.jsonl from generate.sh")
 
 
 def write(cond, items):
@@ -39,26 +29,21 @@ def write(cond, items):
             f.write(json.dumps(x) + "\n")
 
 
-def dump(name, items):
-    with open(os.path.join(out_dir, name), "w") as f:
-        for x in items:
-            f.write(json.dumps(x) + "\n")
-
-
 def dec(ids):
     return tok.decode(ids, skip_special_tokens=True)
 
 
-if human_by_id:
-    order = [r["id"] for r in src if r["id"] in human_by_id] or list(human_by_id)
-    humans, shorts = [], []
-    for i in order:
-        text = human_by_id[i]
-        ids = tok(text, add_special_tokens=False).input_ids[:SHORT_LEN]
-        humans.append({"id": i, "text": text})
-        shorts.append({"id": i, "text": dec(ids)})
-    dump("human.jsonl", humans)
-    dump("human_short.jsonl", shorts)
+humans, shorts = [], []
+for r in rows:
+    if not r.get("human_text"):
+        continue
+    text = r["human_text"]
+    ids = tok(text, add_special_tokens=False).input_ids[:SHORT_LEN]
+    humans.append({"id": r["id"], "text": text})
+    shorts.append({"id": r["id"], "text": dec(ids)})
+if humans:
+    write("human", humans)
+    write("human_short", shorts)
 
 
 # clean

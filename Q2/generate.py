@@ -56,11 +56,14 @@ for start in range(0, len(rows), batch_size):
                         past_key_values=out.past_key_values, use_cache=True, **fwd_extra)
     ids = torch.cat(new, 1).tolist()
     for j, r in enumerate(chunk):
-        results[start + j] = {
+        row = {
             "id": r["id"],
             "text": tokenizer.decode(ids[j], skip_special_tokens=True),
             "token_ids": ids[j],
         }
+        if r.get("human_text"):
+            row["human_text"] = r["human_text"]
+        results[start + j] = row
     print(f"{min(start + batch_size, len(rows))}/{len(rows)}  {time.perf_counter() - t_gen:.0f}s", flush=True)
 
 if device == "cuda":
