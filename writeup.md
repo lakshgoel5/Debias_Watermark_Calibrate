@@ -32,7 +32,7 @@ The baseline confidence is the average probability of the generated tokens, and 
 
 The submitted confidence is a logistic regression fit on the train labels. The inputs are summary statistics of the answer-token log-probabilities (mean, minimum, first token), the end-of-sequence log-probability, the answer length, whether the decode was cut off, and a P(True) score: the model is shown its own answer and asked "True or False", and I keep the True logit minus the False logit. I also train a linear probe on the last-token hidden state of the question (layer 20) and of that True/False prompt (layer 24). The probe outputs are stacked with the token features. The abstain cutoff is chosen on 5-fold out-of-fold predictions from the train set.
 
-P(True) on its own is well calibrated and ranks weakly (dev AUROC 0.68). Token entropy and answer length rank below chance. Token features plus P(True), without the probes, reached a Q3 score of 0.6064. The two probes add a smaller gain on top. The comparisons are in the Archive. No cutoff on the train folds keeps the error rate at or under 0.15 while still answering enough rows, so the rule falls back to the 20 most confident training rows.
+P(True) on its own is well calibrated and ranks weakly (dev AUROC 0.68). Token entropy and answer length rank below chance. Token features plus P(True), without the probes, reached a Q3 score of 0.6064. The two probes add a smaller gain on top. The comparisons are in the Archive. I look for a cutoff on the train folds that keeps the error rate at or under 0.15, a margin stricter than the eval script's own 0.2 risk cap, while still answering enough rows. No such cutoff exists, so the rule falls back to the 20 most confident training rows: the threshold is set to the confidence score of the 20th most confident training row.
 
 ## Dev results
 
@@ -61,7 +61,7 @@ Utility is 1 point above the baseline, so the penalty for dropping more than 2 p
 
 ### Task 2
 
-`Q2/eval.py` on `q2_prompts_dev.jsonl`, 100 prompts, seed 42. The baseline uses a green list that depends on the previous token and a z-score over unique pairs. The submitted run uses one list for the whole text and the log-count z-score above. Q is the watermarked median perplexity divided by the unwatermarked median. Both rows use the same unwatermarked median (24.421). The dev run, from generation through scoring, finished in 500 seconds.
+`Q2/eval.py` on `q2_prompts_dev.jsonl`, 100 prompts, seed 42. The baseline uses a green list that depends on the previous token, so each scored unit is a (previous token, token) pair rather than a token alone, and the z-score counts each unique pair once. The submitted run uses one list for the whole text and the log-count z-score above. Q is the watermarked median perplexity divided by the unwatermarked median. Both rows use the same unwatermarked median (24.421). The dev run, from generation through scoring, finished in 500 seconds.
 
 | Run | clean | short | substitution | paraphrase | S_det | Q |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -85,7 +85,7 @@ Baseline Q3 score = 0.3890. Submitted Q3 score = 0.6160.
 
 The gain is in the confidence, since the answers did not change. Average token probability sits well above the 16% in-domain accuracy, so ECE is about 0.59. The logistic confidence tracks the true accuracy, and ECE falls to about 0.03. Ranking improves on both splits, from 0.79 to 0.88 in domain and from 0.72 to 0.86 out of domain. Train out-of-fold AUROC moved from 0.80 to 0.84, so the same gap shows up on data the fit did not see.
 
-The selective score stays near zero. It only pays off when the answered rows are at most 20% wrong. This model is wrong much more often than that. In domain it answers 1.2% of the dev file, and those rows are correct. Out of domain it answers 2%, and a quarter of those answers are wrong, which cuts the selective score in half. A cutoff that answers a real share of the questions and still stays under the risk cap is not available on this model.
+The selective score stays near zero. The eval script's selective-score formula only pays off in full when the answered rows are at most 20% wrong (a looser bar than the 0.15 cap used to pick the cutoff above), and it decays to zero past 30% wrong. This model is wrong much more often than that. In domain it answers 1.2% of the dev file, and those rows are correct. Out of domain it answers 2%, and a quarter of those answers are wrong, which cuts the selective score in half. A cutoff that answers a real share of the questions and still stays under the risk cap is not available on this model.
 
 ## Archive
 
@@ -150,3 +150,13 @@ Probe scores stacked on tokens + P(True). The layer was chosen by train out-of-f
 | Both | 0.8423 | 0.8836 | 0.8642 | 0.0326 | 0.0416 |
 
 Both probes have the highest train out-of-fold AUROC, which is why that model was kept. On the out-of-domain file the question probe alone is a bit better (AUROC 0.8689, ECE 0.0238) than both together. The Q3 score only moves from 0.6064 to 0.6160, and the selective score stays near zero in every version.
+
+## Note
+
+The sampling rule fixes the distribution in `generate.sh`. It does not freeze one random draw, so a second run can print a different `S_det` from the same code.
+
+Each of the 200 steps adds 2.0 to the green-list logits and draws with softmax then multinomial, which is temperature 1.0. There is no top-k, top-p, or repetition penalty, and the loop does not stop if an end-of-sequence token is drawn. `human_text` is copied onto the output line after those 200 draws, so it does not change the distribution.
+
+Multinomial sampling is still random. The same seed does not repeat the same 200 tokens on a GPU, because the attention math is not bitwise identical from run to run. A new `generated_<seed>.jsonl` is a new sample from the same watermark, and both `S_det` and `Q` can move.
+
+Temperature 0.7 and top-p 0.9 are only in the paraphrase rewrite inside `perturb.sh`. That step is not the watermark. Re-running it draws a new paraphrase, and paraphrase is the condition that moves `S_det` when the watermarked tokens themselves are unchanged.
