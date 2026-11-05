@@ -1,6 +1,6 @@
 import inspect, json, os, sys, time, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from common import CONTEXT, DELTA, MODEL, NUM_TOKENS, load_key, green_mask
+from common import DELTA, MODEL, NUM_TOKENS, load_key, green_mask
 
 input_jsonl, out_dir, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
 batch_size = int(os.environ.get("WM_BATCH", "8"))
@@ -26,8 +26,7 @@ load_s = time.perf_counter() - t_load
 
 rows = [json.loads(l) for l in open(input_jsonl) if l.strip()]
 vocab = key["vocab_size"]
-# CONTEXT=0: one green list, kept on device. The per-token copy was part of the 40 min projection.
-green = None if CONTEXT else green_mask(0, key, vocab).to(device)
+green = green_mask(key, vocab).to(device)
 gen = torch.Generator(device=device)
 gen.manual_seed(seed)
 
@@ -48,12 +47,7 @@ for start in range(0, len(rows), batch_size):
                     use_cache=True, **fwd_extra)
         for step in range(NUM_TOKENS):
             logits = out.logits[:, -1, :vocab].float()
-            if CONTEXT:
-                prev = new[-1] if new else enc["input_ids"][:, -1]
-                step_mask = torch.stack([green_mask(int(p), key, vocab) for p in prev.tolist()]).to(device)
-                logits = logits + DELTA * step_mask.float()
-            else:
-                logits = logits + DELTA * green.float()
+            logits = logits + DELTA * green.float()
             nxt = torch.multinomial(torch.softmax(logits, -1), 1, generator=gen)
             new.append(nxt)
             attn = torch.cat([attn, torch.ones(len(chunk), 1, dtype=attn.dtype, device=device)], 1)
