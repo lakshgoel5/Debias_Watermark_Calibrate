@@ -5,10 +5,10 @@ fit: scaled logistic regression on the train labels, abstain threshold from
 out-of-fold train predictions. Writes the joblib artifact infer.py loads.
 
 Usage:
-  python3 train.py features data/q3_qa_train.jsonl feats/train.jsonl
-  python3 train.py features data/q3_qa_dev.jsonl feats/dev.jsonl
-  python3 train.py features data/q3_qa_dev_ood.jsonl feats/ood.jsonl
-  python3 train.py fit --train feats/train.jsonl --dev feats/dev.jsonl --ood feats/ood.jsonl --out exp2_model.joblib
+  python3 train.py features ../data/public/q3_qa_train.jsonl ../predictions/Q3/train.jsonl
+  python3 train.py features ../data/public/q3_qa_dev.jsonl ../predictions/Q3/dev.jsonl
+  python3 train.py features ../data/public/q3_qa_dev_ood.jsonl ../predictions/Q3/ood.jsonl
+  python3 train.py fit --train ../predictions/Q3/train.jsonl --dev ../predictions/Q3/dev.jsonl --ood ../predictions/Q3/ood.jsonl --out ../predictions/Q3/exp2_model.joblib
 """
 import argparse
 import json
@@ -171,7 +171,7 @@ def main():
     fit.add_argument("--C", type=float, default=0.5)
     fit.add_argument("--max-risk", type=float, default=0.15, help="safety margin below 0.2")
     fit.add_argument("--min-n", type=int, default=20, help="min answered rows in train-oof")
-    fit.add_argument("--out", default="exp2_model.joblib")
+    fit.add_argument("--out", default="../predictions/Q3/exp2_model.joblib")
 
     args = ap.parse_args()
     if args.cmd == "features":

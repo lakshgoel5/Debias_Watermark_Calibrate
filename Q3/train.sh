@@ -1,15 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Usage: ./train.sh <output_dir>
-# Writes feature files and exp2_model.joblib into <output_dir>.
+# Usage: ./train.sh [output_dir]
+# Writes feature files and exp2_model.joblib into predictions/Q3 by default.
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 <output_dir>"
-  exit 1
-fi
-
-out="$1"
+out="${1:-../predictions/Q3}"
 mkdir -p "$out"
 
 python3 train.py features ../data/public/q3_qa_train.jsonl "$out/train.jsonl"
