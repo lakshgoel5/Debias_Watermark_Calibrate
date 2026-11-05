@@ -1,6 +1,6 @@
 import json, os, sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from common import MODEL, DELTA, NUM_TOKENS, load_key, green_mask
+from common import MODEL, DELTA, ENTROPY_GATE, NUM_TOKENS, load_key, green_mask
 
 input_jsonl, out_dir, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
 key = load_key(out_dir)
@@ -28,10 +28,17 @@ for i, r in enumerate(rows):
         for _ in range(NUM_TOKENS):
             logits = out.logits[0, -1].float()
             assert logits.shape[0] == key["vocab_size"]
-            # The ONLY change to the distribution: +DELTA on green tokens. Temperature stays 1.0,
-            # no top-k/top-p. 
+            # The ONLY change to the distribution: +delta_t on green tokens. Temperature stays 1.0,
+            # no top-k/top-p. With ENTROPY_GATE=1 (Idea 3), delta_t = DELTA * (1 - p_max): locked-in
+            # tokens (p_max -> 1) are left intact to protect M-oracle PPL (Q), while uncertain steps
+            # (p_max small) receive the full watermark boost.
             # EOS is not blocked: if sampled we just keep going, so we never stop early.
-            logits = logits + DELTA * green_mask(prev, key, key["vocab_size"]).to(device)
+            if ENTROPY_GATE:
+                p_max = torch.softmax(logits, -1).max().item()
+                delta_t = DELTA * (1.0 - p_max)
+            else:
+                delta_t = DELTA
+            logits = logits + delta_t * green_mask(prev, key, key["vocab_size"]).to(device)
             # logits modified before softmax, so green tokens are more likely to be sampled
             nxt = torch.multinomial(torch.softmax(logits, -1), 1, generator=gen)  # samples an index according to the supplied weights or probabilities
             # multinomial sampling allows lower-probability tokens to be selected too
