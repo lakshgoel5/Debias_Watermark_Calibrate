@@ -42,7 +42,7 @@ def extract_features(args):
     Path(args.output_jsonl).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output_jsonl, "w", encoding="utf-8") as f:
         for i, row in enumerate(rows):
-            answer, feats = extract(row, tok, model, true_ids[0], false_ids[0], eos_ids)
+            answer, feats, _ = extract(row, tok, model, true_ids[0], false_ids[0], eos_ids)
             rec = {"id": row["id"], "answer": answer, "features": feats}
             if "answers" in row:
                 rec["correct"] = int(is_correct(answer, row["answers"]))

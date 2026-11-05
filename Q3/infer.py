@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 START = time.time()
 REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-ARTIFACT = "exp2_model.joblib"
+ARTIFACT = "exp3_model.joblib"
 MAX_NEW = 64
 
 
@@ -63,9 +63,29 @@ def chat(tok, content):
     )
 
 
+def probe_layers(art):
+    return {src: int(art["probes"][src]["layer"]) for src in art["srcs"]}
+
+
 @torch.no_grad()
-def extract(row, tok, model, true_id, false_id, eos_ids):
-    inputs = tok(chat(tok, format_prompt(row)), return_tensors="pt", add_special_tokens=False).to(model.device)
+def forward_prompt(text, tok, model, layers):
+    # Last-token hidden state, with the float16 round-trip the probe was fit on.
+    enc = tok(text, return_tensors="pt", add_special_tokens=False).to(model.device)
+    pos = (enc["attention_mask"].cumsum(-1) - 1).clamp(min=0)
+    out = model(**enc, position_ids=pos, output_hidden_states=bool(layers))
+    hidden = {}
+    if layers:
+        for layer in layers:
+            vec = out.hidden_states[layer][0, -1, :].float().cpu().numpy()
+            hidden[layer] = vec.astype(np.float16).astype(np.float32)
+    return out.logits[0, -1].float(), hidden
+
+
+@torch.no_grad()
+def extract(row, tok, model, true_id, false_id, eos_ids, probe_layers=None):
+    probe_layers = probe_layers or {}
+    question = chat(tok, format_prompt(row))
+    inputs = tok(question, return_tensors="pt", add_special_tokens=False).to(model.device)
     gen = model.generate(
         **inputs, max_new_tokens=MAX_NEW, do_sample=False,
         repetition_penalty=1.0, return_dict_in_generate=True,
@@ -87,8 +107,13 @@ def extract(row, tok, model, true_id, false_id, eos_ids):
         body_lp, body_ent = lps or [-20.0], ents or [0.0]
     eos_lp = lps[-1] if ended else -14.0
 
-    p = tok(chat(tok, ptrue_prompt(row["question"], answer)), return_tensors="pt", add_special_tokens=False).to(model.device)
-    logits = model(**p).logits[0, -1].float()
+    q_hidden = {}
+    if "q" in probe_layers:
+        _, q_hidden = forward_prompt(question, tok, model, [probe_layers["q"]])
+    pt_layers = [probe_layers["pt"]] if "pt" in probe_layers else []
+    logits, pt_hidden = forward_prompt(
+        chat(tok, ptrue_prompt(row["question"], answer)), tok, model, pt_layers
+    )
     ptrue_logit = (logits[true_id] - logits[false_id]).item()
 
     feats = {
@@ -103,19 +128,30 @@ def extract(row, tok, model, true_id, false_id, eos_ids):
         "eos_logprob": eos_lp,
         "truncated": 0.0 if ended else 1.0,
     }
-    return answer, feats
+    hidden = {}
+    if "q" in probe_layers:
+        hidden["q"] = q_hidden[probe_layers["q"]]
+    if "pt" in probe_layers:
+        hidden["pt"] = pt_hidden[probe_layers["pt"]]
+    return answer, feats, hidden
 
 
-def score(feats, art):
-    row = np.array([[feats[name] for name in art["features"]]], dtype=np.float64)
-    return float(art["model"].predict_proba(row)[0, 1])
+def score(feats, hidden, art):
+    parts = [np.array([[feats[name] for name in art["features"]]], dtype=np.float64)]
+    for src in art["srcs"]:
+        probe = art["probes"][src]
+        value = probe["pipe"].decision_function(hidden[src].reshape(1, -1))
+        parts.append(np.asarray(value, dtype=np.float64).reshape(1, 1))
+    return float(art["stacker"].predict_proba(np.column_stack(parts))[0, 1])
 
 
 def find_artifact(output_dir):
+    root = Path(__file__).resolve().parent
     candidates = [
         Path(output_dir) / ARTIFACT,
-        Path(__file__).resolve().parent / "checkpoints" / ARTIFACT,
-        Path(__file__).resolve().parent / ARTIFACT,
+        root / "checkpoints" / ARTIFACT,
+        root.parent / "predictions" / "Q3" / ARTIFACT,
+        root / ARTIFACT,
     ]
     for path in candidates:
         if path.is_file():
@@ -133,7 +169,7 @@ def find_base_model(model_dir, output_dir):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Run Q3 calibrated QA inference (Exp 2).")
+    ap = argparse.ArgumentParser(description="Run Q3 calibrated QA inference (Exp 3).")
     ap.add_argument("input_jsonl")
     ap.add_argument("output_dir")
     ap.add_argument("--model-dir", default=None, help="Local M-inst directory")
@@ -144,6 +180,7 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     art = joblib.load(find_artifact(args.output_dir))
+    layers = probe_layers(art)
     rows = read_jsonl(args.input_jsonl)
     tok, model = load_model(args.adapter_dir, find_base_model(args.model_dir, args.output_dir))
 
@@ -160,8 +197,10 @@ def main():
             pred = None
             if time.time() - START < args.time_budget:
                 try:
-                    answer, feats = extract(row, tok, model, true_ids[0], false_ids[0], eos_ids)
-                    conf = max(0.0, min(1.0, score(feats, art)))
+                    answer, feats, hidden = extract(
+                        row, tok, model, true_ids[0], false_ids[0], eos_ids, layers
+                    )
+                    conf = max(0.0, min(1.0, score(feats, hidden, art)))
                     pred = {"id": row["id"], "answer": answer, "confidence": conf, "abstain": conf < art["threshold"]}
                 except Exception as e:  # e.g. OOM on one row: never lose the whole file
                     print(f"row {i}: {type(e).__name__}: {e}", flush=True)

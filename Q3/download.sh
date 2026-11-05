@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Usage: ./download.sh <out_dir>
-# Fetches exp2_model.joblib
+# Fetches exp3_model.joblib
 
 if [ "$#" -ne 1 ]; then
   echo "Usage: $0 <out_dir>"
@@ -18,6 +18,6 @@ import sys
 from huggingface_hub import hf_hub_download, snapshot_download
 
 out, repo = sys.argv[1], sys.argv[2]
-hf_hub_download(repo_id=repo, filename="exp2_model.joblib", local_dir=out)
+hf_hub_download(repo_id=repo, filename="exp3_model.joblib", local_dir=out)
 print("download done")
 PYEOF
