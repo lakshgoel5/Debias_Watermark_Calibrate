@@ -31,4 +31,6 @@ fi
 
 input_jsonl="${3:-$default_input}"
 
+bash download.sh
+
 python3 infer.py "$mode" "$input_jsonl" "$out_dir" --model-dir checkpoints
