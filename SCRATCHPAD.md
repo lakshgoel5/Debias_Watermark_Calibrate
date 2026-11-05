@@ -204,10 +204,10 @@ Paraphrase mean z moved from 1.23 (below tau) to 2.73 (just above tau), and TPR 
 Clean, short, and substitution stayed saturated. Paraphrase outputs averaged 166 tokens
 (min 15, max 244). `S_det` 0.7825 to 0.8850 and `Q` 1.41 to 1.17, both better.
 
-### Run 2b: log-multiplicity weighted z-score on Run 2 generations (detector-only update)
+### Run 2b: log-multiplicity weighted z-score on Run 2 generations (local rescore only)
 
-Same generated texts and `Q = 1.1656` as Run 2 (`Q2/secret/secret`), rescored with
-`w_i = 1 + ln(k_i)` in `z_score`:
+Not a Kaggle log. Same generated texts and `Q = 1.1656` as Run 2 (`Q2/secret/secret`), rescored
+locally with `w_i = 1 + ln(k_i)` in `z_score`. This 0.9275 never appeared in the Kaggle history.
 
 | Condition | TPR (`w_i = 1 + ln k_i`) | Run 2 (`w_i = 1`) | Run 1 (`CONTEXT = 1`) |
 | --- | ---: | ---: | ---: |
@@ -219,7 +219,9 @@ Same generated texts and `Q = 1.1656` as Run 2 (`Q2/secret/secret`), rescored wi
 
 Next: paraphrase is at 0.73 (`S_det = 0.9275`, `Q = 1.1656`).
 
-### Run 2c: White-box Neyman–Pearson LLR detector using `M-base` (Idea 4, detector-only on Run 2 files)
+### Run 2c: white-box LLR on Run 2 files (local rescore only)
+
+Not a Kaggle log. The 0.9500 below was computed locally on the experiment 2 texts. Kaggle runs of the white-box detector printed 0.8000 (Run 4) and 0.8675 (Run 5).
 
 Rule 4 allows `detect.sh` to run `M-base`. At each token step `t >= 1`, `M-base` predicts the
 next-token distribution `p_base(. | x_{<t})`, and we compute the total probability mass on the
@@ -324,12 +326,25 @@ New texts, not a rescore of Run 2. `generate` projected 41.2 min for 300 prompts
 | paraphrase | 0.4900 |
 | **S_det** | **0.8675** |
 
-`Q = 1.1`. The 0.9500 from Run 2c was pure LLR (`d = 1.0`, no z-score mix) on one old file of 100 prompts. This run used a new sample and a different score, and paraphrase is the gap.
+`Q = 1.1`. This is the best `S_det` printed on Kaggle after experiment 2, and generation was over the 30 min limit.
+
+Kaggle log, in order:
+
+| Run | What changed | S_det | Time |
+| --- | --- | ---: | --- |
+| 2 (`secret/secret`) | `CONTEXT = 0`, `DELTA = 2` | 0.8850 | not logged |
+| 3 | `GAMMA = 0.5`, `DELTA = 2.2` | 0.8525 | not logged |
+| 4 | entropy gate + white-box | 0.8000 | 40.1 min projected |
+| 5 | flat `DELTA = 2` + blended white-box | 0.8675 | 41.2 min projected |
+
+0.9275 and 0.9500 are local rescores of the experiment 2 files. They are not in this log.
 
 ### Code after Run 5
 
-- Generator is unchanged in distribution: `GAMMA = 0.25`, `CONTEXT = 0`, flat `DELTA = 2.0`. Prompts are decoded in batches of 8 (`WM_BATCH`) so 300 prompts can finish inside 30 min. Same seed and same batch size reproduce the file. A new `generated_<seed>.jsonl` will not match Run 5 token for token.
-- Detector score is the pure LLR from Run 2c: `sum ell_t / sqrt(T)`, `LLR_DELTA = 1.0`, no z-score mix. Rescore the Run 5 files with the six `detect.sh` calls before regenerating.
+Shipped code is experiment 2, not the white-box detector. White-box on Kaggle printed 0.8000 and 0.8675. Entropy gating and `GAMMA = 0.5` are removed.
+
+- Generator: `GAMMA = 0.25`, one green list, flat `DELTA = 2.0`, batched (`WM_BATCH`, default 8).
+- Detector: z-score with `w = 1 + ln(count)`. On the experiment 2 files this local rescore was 0.9275. It has not been printed by Kaggle. The Kaggle print for these texts with `w = 1` was 0.8850.
 
 # Task 3
 

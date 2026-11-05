@@ -4,12 +4,7 @@ set -euo pipefail
 # Usage: ./download.sh <out_dir>
 # Fetches exp3_model.joblib
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 <out_dir>"
-  exit 1
-fi
-
-OUT="$1"
+OUT="${1:-checkpoints}"
 HF_REPO="lakshgoel/col873-Q2-exp2"
 mkdir -p "$OUT"
 
