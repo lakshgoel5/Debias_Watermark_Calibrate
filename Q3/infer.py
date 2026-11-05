@@ -32,7 +32,7 @@ def load_model(adapter_dir=None, model_dir=None):
         device, dtype = "cpu", torch.float32
 
     tokenizer = AutoTokenizer.from_pretrained(path)
-    model = AutoModelForCausalLM.from_pretrained(path, dtype=dtype).to(device)
+    model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=dtype).to(device)
     if adapter_dir:
         model = PeftModel.from_pretrained(model, adapter_dir)
     model.eval()
