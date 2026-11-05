@@ -27,7 +27,7 @@ def load_model(adapter_dir=None):
         device, dtype = "cpu", torch.float32
 
     tokenizer = AutoTokenizer.from_pretrained(REPO_ID)   # LoRA doesn't change the tokenizer
-    model = AutoModelForCausalLM.from_pretrained(REPO_ID, dtype=dtype).to(device)
+    model = AutoModelForCausalLM.from_pretrained(REPO_ID, torch_dtype=dtype).to(device)
     if adapter_dir:                                      # None -> untouched base model (baseline)
         model = PeftModel.from_pretrained(model, adapter_dir)
     model.eval()

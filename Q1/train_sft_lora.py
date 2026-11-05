@@ -194,7 +194,7 @@ def load_model_and_tokenizer(lora_r):
     tokenizer.padding_side = "right"
 
     # Base weights are loaded in half precision to save memory and stay frozen.
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, dtype=dtype)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=dtype)
 
     lora_cfg = LoraConfig(
         r=lora_r,                  # rank = capacity of the adapter. 16 is plenty for this task.
