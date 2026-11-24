@@ -1,8 +1,65 @@
-# COL873_A2
+# Debias, Watermark, Abstain
 
 - Honour Code. "Even though I have taken help from the following students and LLMs in terms of discussing ideas and coding practices, all my code is written by me."
 - Students: None
 - LLMs: Claude, Grok
+
+## Running the code
+
+```bash
+pip install -r requirements.txt
+```
+
+Run each task from inside its own folder, since the scripts use relative paths.
+
+### Task 1
+
+```bash
+cd Q1
+bash download.sh ../predictions/Q1
+bash infer.sh bias ../predictions/Q1 ../data/public/q1_bbq_dev.jsonl
+bash infer.sh qa   ../predictions/Q1 ../data/public/q1_qa_dev.jsonl
+python eval.py --bbq-data ../data/public/q1_bbq_dev.jsonl --bbq-preds ../predictions/Q1/output_bias.jsonl --qa-data  ../data/public/q1_qa_dev.jsonl  --qa-preds  ../predictions/Q1/output_qa.jsonl
+```
+
+### Task 2
+
+```bash
+cd Q2
+bash setup.sh secret
+bash generate.sh ../data/public/q2_prompts_dev.jsonl secret 42
+bash perturb.sh secret/generated_42.jsonl secret 42
+
+  bash detect.sh "secret/generated_clean_42.jsonl" secret
+  bash detect.sh "secret/generated_substitution_42.jsonl" secret
+  bash detect.sh "secret/generated_paraphrase_42.jsonl" secret
+  bash detect.sh "secret/human.jsonl" secret
+  bash detect.sh "secret/human_short.jsonl" secret
+
+python eval.py ../data/public/q2_prompts_dev.jsonl secret 42
+```
+
+### Task 3
+
+```bash
+cd Q3
+bash download.sh  ../predictions/Q3
+bash infer.sh     ../data/public/q3_qa_dev.jsonl              ../predictions/Q3
+bash infer.sh     ../data/public/q3_qa_dev_ood.jsonl          ../predictions/Q3
+
+python eval.py q3 ../predictions/Q3/pred_q3_qa_dev.jsonl      ../data/public/q3_qa_dev.jsonl
+python eval.py q3 ../predictions/Q3/pred_q3_qa_dev_ood.jsonl  ../data/public/q3_qa_dev_ood.jsonl
+```
+
+### Notes
+
+- `download.sh` fetches the trained model. To train instead: `bash train.sh ../predictions/Q3` for
+  Task 3, and for Task 1 `python train_sft_lora.py --mode bias --train-jsonl
+  ../data/public/q1_bbq_train.jsonl --dev-jsonl ../data/public/q1_bbq_dev.jsonl --output-dir
+  ../predictions/Q1` (`train.sh` calls `train.py`, which is not the filename here).
+- Q1 and Q3 use one directory for both the model and the predictions, so download into the same
+  directory you pass to `infer.sh`.
+- `Q2/eval.py` is dev-only and downloads Qwen2.5-3B (about 6 GB) to compute Q.
 
 ## Approach
 
